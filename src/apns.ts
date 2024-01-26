@@ -1,8 +1,7 @@
 import { EventEmitter } from 'events'
-import { RequestInit, Response, fetch } from 'fetch-http2'
-import { Secret, sign } from 'jsonwebtoken'
 import { Errors } from './errors'
 import { Notification, Priority } from './notifications/notification'
+import * as jose from 'jose'
 
 // APNS version
 const API_VERSION = 3
@@ -25,7 +24,7 @@ export interface SigningToken {
 
 export interface ApnsOptions {
   team: string
-  signingKey: Secret
+  signingKey: string
   keyId: string
   defaultTopic?: string
   host?: Host | string
@@ -37,7 +36,7 @@ export class ApnsClient extends EventEmitter {
   readonly team: string
   readonly keyId: string
   readonly host: Host | string
-  readonly signingKey: Secret
+  readonly signingKey: string
   readonly defaultTopic?: string
   readonly requestTimeout?: number
   readonly pingInterval?: number
@@ -73,8 +72,9 @@ export class ApnsClient extends EventEmitter {
     const url = `https://${this.host}/${API_VERSION}/device/${token}`
     const options: RequestInit = {
       method: 'POST',
+      // @ts-ignore
       headers: {
-        authorization: `bearer ${this._getSigningToken()}`,
+        authorization: `bearer ${await this._getSigningToken()}`,
         'apns-push-type': notification.pushType,
         'apns-topic': notification.options.topic ?? this.defaultTopic
       },
@@ -84,10 +84,12 @@ export class ApnsClient extends EventEmitter {
     }
 
     if (notification.priority !== Priority.immediate) {
+      // @ts-ignore
       options.headers!['apns-priority'] = notification.priority.toString()
     }
 
     if (notification.options.expiration) {
+      // @ts-ignore
       options.headers!['apns-expiration'] =
         typeof notification.options.expiration === 'number'
           ? notification.options.expiration.toFixed(0)
@@ -95,6 +97,7 @@ export class ApnsClient extends EventEmitter {
     }
 
     if (notification.options.collapseId) {
+      // @ts-ignore
       options.headers!['apns-collapse-id'] = notification.options.collapseId
     }
 
@@ -108,7 +111,7 @@ export class ApnsClient extends EventEmitter {
       return notification
     }
 
-    let json
+    let json: any
 
     try {
       json = await res.json()
@@ -125,7 +128,7 @@ export class ApnsClient extends EventEmitter {
     throw json
   }
 
-  private _getSigningToken(): string {
+  private async _getSigningToken(): Promise<string> {
     if (this._token && Date.now() - this._token.timestamp < RESET_TOKEN_INTERVAL_MS) {
       return this._token.value
     }
@@ -135,13 +138,12 @@ export class ApnsClient extends EventEmitter {
       iat: Math.floor(Date.now() / 1000)
     }
 
-    const token = sign(claims, this.signingKey, {
-      algorithm: SIGNING_ALGORITHM,
-      header: {
+    const token = await new jose.SignJWT(claims)
+      .setProtectedHeader({
         alg: SIGNING_ALGORITHM,
         kid: this.keyId
-      }
-    })
+      })
+      .sign(await jose.importPKCS8(this.signingKey, SIGNING_ALGORITHM))
 
     this._token = {
       value: token,
@@ -153,5 +155,16 @@ export class ApnsClient extends EventEmitter {
 
   private _resetSigningToken() {
     this._token = null
+  }
+
+  initToken (value: string): void {
+    this._token = {
+      value,
+      timestamp: Date.now()
+    }
+  }
+
+  async getToken() {
+    return this._getSigningToken()
   }
 }
